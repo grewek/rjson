@@ -5,10 +5,12 @@ use std::io::Write;
 use std::process;
 
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 enum JsonTokens<'a> {
     OpenCurlyBrace,
     ClosingCurlyBrace,
+    OpenSquareBrace,
+    ClosingSquareBrace,
     Colon,
     Comma,
     Identifier(&'a str, usize),
@@ -38,7 +40,7 @@ fn scan_identifier<'a>(content: &'a str, start: usize) -> Result<(JsonTokens, us
     let bytes = &mut content.as_bytes();
     while end < bytes.len() {
         match bytes[end] {
-            b'a'..=b'z' | b'A'..=b'Z' => {
+            b'_' | b'a'..=b'z' | b'A'..=b'Z' => {
                 end += 1;
             }
             _ => break,
@@ -63,6 +65,8 @@ fn scan_json(content: &str) -> Result<Vec<JsonTokens>> {
         match bytes[current] {
             b'{' => tokens.push(JsonTokens::OpenCurlyBrace),
             b'}' => tokens.push(JsonTokens::ClosingCurlyBrace),
+            b'[' => tokens.push(JsonTokens::OpenSquareBrace),
+            b']' => tokens.push(JsonTokens::ClosingSquareBrace),
             b':' => tokens.push(JsonTokens::Colon),
             b',' => tokens.push(JsonTokens::Comma),
             b'"' => {
@@ -71,14 +75,14 @@ fn scan_json(content: &str) -> Result<Vec<JsonTokens>> {
                 current += length;
                 continue
             },
-            b'a'..=b'z' | b'A'..=b'Z' => {
+            b'_' | b'a'..=b'z' | b'A'..=b'Z' => {
                 let (token, length) = scan_identifier(&content, current)?;
                 tokens.push(token);
                 current += length;
                 continue;
             }
 
-            _ => panic!("whoopsie: {:?}", bytes[current] as char),
+            unknown => panic!("The lexer hit a unknown symbol please add {}", unknown),
         }
 
         current += 1;
@@ -90,54 +94,126 @@ fn scan_json(content: &str) -> Result<Vec<JsonTokens>> {
 }
 
 
-fn parse_key_value_pair(tokens: &[JsonTokens]) {
-    let mut current = 0;
-    loop {
-        let key = &tokens.get(current);
-        let colon = &tokens.get(current+1);
-        let value = &tokens.get(current+2);
-        match (key, colon, value) {
-            (Some(JsonTokens::Identifier(key, _)), Some(JsonTokens::Colon), Some(JsonTokens::Identifier(value, _))) => 
-                println!("{} {}", key, value),
-            (Some(JsonTokens::String(key, _)), Some(JsonTokens::Colon), Some(JsonTokens::String(value, _))) => 
-                println!("{} {}", key, value),
-            (Some(JsonTokens::Identifier(_, _)), Some(_), Some(_)) => 
-                crash_and_burn("colon expected after key value"),
-            _ => 
-                crash_and_burn(format!("Another error {:?} {:?} {:?}", key, colon, value).as_str()),
-        }
-
-        match &tokens.get(current+3) {
-            Some(JsonTokens::Comma) => current += 4,
-            _ => break,
-        }
-    }
-}
-fn parse_json_object(tokens: &[JsonTokens]) {
-    match tokens.first() {
-        Some(JsonTokens::OpenCurlyBrace) => parse_json_object(&tokens[1..]),
-        Some(JsonTokens::Colon) => todo!(),
-        Some(JsonTokens::Comma) => todo!(),
-        Some(JsonTokens::ClosingCurlyBrace) => return,
-        Some(JsonTokens::Identifier(_, _)) => parse_key_value_pair(&tokens),
-        Some(JsonTokens::String(_, _)) => parse_key_value_pair(&tokens),
-        Some(JsonTokens::Eof) => crash_and_burn("Unclosed JSON Object"),
-        None => crash_and_burn("Expected '}' but tokenstream was empty"),
-    }
-}
-fn parse_json(tokens: &[JsonTokens]) {
-    match tokens.first() {
-        Some(JsonTokens::OpenCurlyBrace) => parse_json_object(&tokens[1..]),
-        Some(JsonTokens::Colon) => todo!(),
-        Some(JsonTokens::Comma) => todo!(),
-        Some(JsonTokens::ClosingCurlyBrace) => crash_and_burn("Expected the start of a json object"),
-        Some(JsonTokens::Identifier(_, _)) => crash_and_burn("identifer outside json object"),
-        Some(JsonTokens::String(_, _)) => crash_and_burn("string outside of json object"),
-        Some(JsonTokens::Eof) => crash_and_burn("Empty JSON"),
-        None => todo!(),
-    }
+struct Parser<'a> {
+    position: usize,
+    tokens: &'a [JsonTokens<'a>],
 }
 
+impl<'a> Parser<'a> {
+    fn new(tokens: &'a[JsonTokens]) -> Self {
+        Self {
+            position: 0,
+            tokens,
+        }
+    }
+
+    fn match_token(&mut self, to_match: JsonTokens) -> bool {
+        if self.tokens[self.position] == to_match {
+            return true;
+        }
+
+        false
+    }
+
+    fn peek(&mut self) -> Option<&JsonTokens> {
+        Some(&self.tokens[self.position])
+    }
+
+    fn advance(&mut self) -> Option<&JsonTokens> {
+        let next_token = &self.tokens[self.position];
+        self.position += 1;
+
+        Some(next_token)
+    }
+
+    fn parse_json_array(&mut self) {
+        dbg!(&self.tokens[self.position]);
+        loop {
+
+            if self.match_token(JsonTokens::ClosingSquareBrace) {
+                self.advance();
+                break;
+            }
+
+            match self.advance() {
+                Some(JsonTokens::String(value, _)) => println!("Element: {}", value),
+                _ => todo!(),
+            }
+
+            if !self.match_token(JsonTokens::Comma) {
+                break;
+            }
+
+            self.advance();
+        }
+    }
+
+    fn parse_key_value_pair(&mut self) {
+        dbg!(&self.tokens[self.position]);
+        loop {
+            match self.advance() {
+                Some(JsonTokens::Identifier(key, _)) => println!("{}", key),
+                Some(JsonTokens::String(key, _)) => println!("{}", key),
+                _ => crash_and_burn("key needs to be a string or a identifier"),
+            }
+
+            if !self.match_token(JsonTokens::Colon) {
+                crash_and_burn("expected colon after key");
+                break;
+            }
+
+            self.advance();
+
+            match self.advance() {
+                Some(JsonTokens::Identifier(value, _)) => println!("{}", value),
+                Some(JsonTokens::String(value, _)) => println!("{}", value),
+                Some(JsonTokens::OpenCurlyBrace) => self.parse_json_object(),
+                Some(JsonTokens::OpenSquareBrace) => self.parse_json_array(),
+                _ => crash_and_burn("value needs to be a string or a identifier"),
+            }
+
+            if !self.match_token(JsonTokens::Comma) {
+                break;
+            }
+
+            self.advance();
+        }
+    }
+
+    fn parse_json_object(&mut self) {
+        //FIXME: Potential to blow the stack if we recurse to deep !
+        match self.peek() {
+            Some(JsonTokens::OpenCurlyBrace) => self.parse_json_object(),
+            Some(JsonTokens::ClosingCurlyBrace) => return,
+            Some(JsonTokens::OpenSquareBrace) => todo!(),
+            Some(JsonTokens::ClosingSquareBrace) => todo!(),
+            Some(JsonTokens::Colon) => todo!(),
+            Some(JsonTokens::Comma) => todo!(),
+            Some(JsonTokens::Identifier(_, _)) => self.parse_key_value_pair(),
+            Some(JsonTokens::String(_, _)) => self.parse_key_value_pair(),
+            Some(JsonTokens::Eof) => crash_and_burn("Unclosed JSON Object"),
+            None => crash_and_burn("Expected '}' but tokenstream was empty"),
+        }
+    }
+
+    fn parse(&mut self) {
+        match self.advance() {
+            Some(JsonTokens::OpenCurlyBrace) => self.parse_json_object(),
+            Some(JsonTokens::ClosingCurlyBrace) => crash_and_burn("expected the start of a json object"),
+            Some(JsonTokens::OpenSquareBrace) => crash_and_burn("expected the start of a json object but got open square brace"),
+            Some(JsonTokens::ClosingSquareBrace) => crash_and_burn("expected the start of a json object but got closed square brace"),
+            Some(JsonTokens::Colon) => crash_and_burn("expected the start of a json object but found a colon"),
+            Some(JsonTokens::Comma) => crash_and_burn("expected the start of a json object but found a comma"),
+            Some(JsonTokens::Identifier(_, _)) => crash_and_burn("identifer outside json object"),
+            Some(JsonTokens::String(_, _)) => crash_and_burn("string outside of json object"),
+            Some(JsonTokens::Eof) => crash_and_burn("Empty JSON"),
+            None => todo!(),
+        }
+    }
+}
+
+//TODO: This thingy should be replace with a Error enum and a result type on
+//      the parser methods.
 fn crash_and_burn(message: &str) {
     let mut stderr = io::stderr();
     let _ = stderr.lock();
@@ -146,13 +222,17 @@ fn crash_and_burn(message: &str) {
     process::exit(1);
 }
 fn main() -> Result<()> {
-    let file_content = fs::read_to_string("examples/step1/test7.json")?;
+    let file_content = fs::read_to_string("examples/test.json")?;
 
     let mut stdout = io::stdout();
     let _ = stdout.lock();
 
+    //TODO: For now 
     let lexed_json = scan_json(&file_content)?;
-    parse_json(&lexed_json);
+    //parse_json(&lexed_json);
+
+    let mut parser = Parser::new(&lexed_json);
+    parser.parse();
 
     if lexed_json.first() == Some(&JsonTokens::Eof) {
         let mut stderr = io::stderr();

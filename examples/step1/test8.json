@@ -1,0 +1,4 @@
+{
+    "normal_key_value": "normal_value",
+    "array_key_value": ["hello", "world", "of", "json", "arrays"]
+}
