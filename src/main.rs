@@ -231,6 +231,10 @@ impl<'a> Parser<'a> {
             None => return Err(ParserError::EmptyJson.into()),
         };
 
+        if !self.match_token(JsonTokens::ClosingCurlyBrace) {
+            return Err(ParserError::MissingSymbol.into());
+        }
+
         Ok(())
     }
 
@@ -282,6 +286,81 @@ fn main() -> Result<()> {
 mod test {
     use crate::*;
     #[test]
-    fn test_json_malformed_array() {
+    fn test_json_empty_is_invalid() {
+        //A empty file is invalid json by the definition of the standard
+        //we need __at least__ a empty json object
+        let test_src = "";
+
+        let tokens = scan_json(&test_src).unwrap();
+        let parser = Parser::new(&tokens).parse();
+
+        assert_eq!(parser.is_err(), true);
+    }
+
+    #[test]
+    fn test_json_empty_object_is_valid() {
+        //A file with a empty json object is valid json
+        let test_src = "{}";
+
+        let tokens = scan_json(&test_src).unwrap();
+        let parser = Parser::new(&tokens).parse();
+
+        assert_eq!(parser.is_ok(), true);
+    }
+
+    #[test]
+    fn test_json_key_without_a_value_is_invalid() {
+        //A json rootobject with a key that has no valid value is invalid json
+        let test_src = "{\"some_key\":}";
+
+        let tokens = scan_json(&test_src).unwrap();
+        let parser = Parser::new(&tokens).parse();
+
+        assert_eq!(parser.is_err(), true);
+    }
+
+    #[test]
+    fn test_json_key_with_value_but_no_closing_brace_is_invalid() {
+        //A json rootobject with a key and a string value but a missing closing
+        //curly brace is invalid json
+        let test_src = "{ \"some_key\": \"some_value\" ";
+
+        let tokens = scan_json(&test_src).unwrap();
+        let parser = Parser::new(&tokens).parse();
+
+        assert_eq!(parser.is_err(), true);
+    }
+
+    #[test]
+    fn test_json_key_with_string_value_is_valid() {
+        //A json rootobject with a key and a string value is valid json
+        let test_src = "{ \"some_key\": \"some_value\" }";
+
+        let tokens = scan_json(&test_src).unwrap();
+        let parser = Parser::new(&tokens).parse();
+
+        assert_eq!(parser.is_ok(), true);
+    }
+
+    #[test]
+    fn test_json_key_with_value_and_trailing_comma_is_invalid() {
+        //A json rootobject with a kv pair is invalid with a trailing comma
+        let test_src = "{ \"some_key\": \"some_value\", }";
+
+        let tokens = scan_json(&test_src).unwrap();
+        let parser = Parser::new(&tokens).parse();
+
+        assert_eq!(parser.is_err(), true);
+    }
+
+    #[test]
+    fn test_json_key_with_value_comma_key_with_value_is_valid() {
+        //A kv pair after a comma results in a valid json
+        let test_src = "{ \"some_key\": \"some_value\", \"s2\": \"v2\" }";
+
+        let tokens = scan_json(&test_src).unwrap();
+        let parser = Parser::new(&tokens).parse();
+
+        assert_eq!(parser.is_ok(), true);
     }
 }
