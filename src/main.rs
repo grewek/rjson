@@ -14,6 +14,9 @@ enum JsonTokens<'a> {
     Comma,
     Identifier(&'a str, usize),
     String(&'a str, usize),
+    Boolean(bool),
+    //TODO: Integers, Doubles !
+    Null,
     Eof,
 }
 
@@ -47,7 +50,15 @@ fn scan_identifier<'a>(content: &'a str, start: usize) -> Result<(JsonTokens, us
     }
 
     let length = end.saturating_sub(start);
-    Ok((JsonTokens::Identifier(&content[start..end], length), length))
+    let token = match &content[start..end] {
+        "true" => JsonTokens::Boolean(true),
+        "false" => JsonTokens::Boolean(false),
+        "null" => JsonTokens::Null,
+        //TODO: If none of the above matches we should just throw up !
+        _ => JsonTokens::Identifier(&content[start..end], length)
+    };
+
+    Ok((token, length))
 }
 
 fn scan_json(content: &str) -> Result<Vec<JsonTokens>> {
@@ -75,9 +86,8 @@ fn scan_json(content: &str) -> Result<Vec<JsonTokens>> {
                 continue;
             }
             b'_' | b'a'..=b'z' | b'A'..=b'Z' => {
-                //FIXME: There is no identifier JSON only strings, bools, numbers and nulls
-                //so this should only check if we have true,false values or null
                 let (token, length) = scan_identifier(&content, current)?;
+
                 tokens.push(token);
                 //TODO: Refactor this into a Lexer struct which keeps the internal
                 //state globally available for all consumers so we don't need to
@@ -102,23 +112,23 @@ fn scan_json(content: &str) -> Result<Vec<JsonTokens>> {
 //TODO: Name these Error Types better
 #[derive(Debug, Clone)]
 enum ParserError {
-    InvalidValueInArray,
     InvalidSymbolInCurrentContext,
     InvalidKey,
     MissingSymbol,
     InvalidValueInCurrentContext,
     EmptyJson,
+    InvalidValue,
 }
 
 impl std::fmt::Display for ParserError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidValueInArray => write!(f, "todo"),
             Self::InvalidSymbolInCurrentContext => write!(f, "todo"),
             Self::InvalidKey => write!(f, "todo"),
             Self::MissingSymbol => write!(f, "todo"),
             Self::InvalidValueInCurrentContext => write!(f, "todo"),
             Self::EmptyJson => write!(f, "todo"),
+            Self::InvalidValue => write!(f, "todo"),
         }
     }
 }
@@ -161,22 +171,30 @@ impl<'a> Parser<'a> {
         Some(next_token)
     }
 
+    fn parse_json_value(&mut self) -> Result<()> {
+        match self.advance() {
+            Some(JsonTokens::String(value, _)) => println!("String: {}", value),
+            Some(JsonTokens::Boolean(value)) => println!("Boolean: {}", value),
+            Some(JsonTokens::Null) => println!("Null"),
+            Some(JsonTokens::OpenCurlyBrace) => self.parse_json_object()?,
+            _ => return Err(ParserError::InvalidValue.into()),
+        }
+
+        Ok(())
+    }
     fn parse_json_array(&mut self) -> Result<()> {
         dbg!(&self.tokens[self.position]);
-
         loop {
-            //OPENBRACE STRING|NUMBER|BOOLEAN COMMA STRING|NUMBER|BOOLEAN ... CLOSINGBRACE
-            match self.advance() {
-                Some(JsonTokens::String(value, _)) => println!("Element: {}", value),
-                Some(JsonTokens::OpenCurlyBrace) => self.parse_json_object()?,
-                _ => return Err(ParserError::InvalidSymbolInCurrentContext.into()),
-            };
+            if self.match_token(JsonTokens::ClosingSquareBrace) {
+                self.advance();
+                break;
+            }
 
-            match self.advance() {
-                Some(JsonTokens::ClosingSquareBrace) => break,
-                Some(JsonTokens::Comma) => self.advance(),
-                _ => todo!(),
-            };
+            self.parse_json_value()?;
+
+            if self.match_token(JsonTokens::Comma) {
+                self.advance();
+            }
         }
 
         Ok(())
@@ -200,6 +218,8 @@ impl<'a> Parser<'a> {
             match self.advance() {
                 Some(JsonTokens::Identifier(value, _)) => println!("{}", value),
                 Some(JsonTokens::String(value, _)) => println!("{}", value),
+                Some(JsonTokens::Boolean(value)) => println!("{}", value),
+                Some(JsonTokens::Null) => println!("null"),
                 Some(JsonTokens::OpenCurlyBrace) => self.parse_json_object()?,
                 Some(JsonTokens::OpenSquareBrace) => self.parse_json_array()?,
                 _ => return Err(ParserError::InvalidValueInCurrentContext.into()), 
@@ -226,6 +246,8 @@ impl<'a> Parser<'a> {
             Some(JsonTokens::Colon) => return Err(ParserError::InvalidSymbolInCurrentContext.into()),
             Some(JsonTokens::Comma) => return Err(ParserError::InvalidSymbolInCurrentContext.into()),
             Some(JsonTokens::Identifier(_, _)) => self.parse_key_value_pair()?,
+            Some(JsonTokens::Boolean(_)) => return Err(ParserError::InvalidSymbolInCurrentContext.into()),
+            Some(JsonTokens::Null) => return Err(ParserError::InvalidValueInCurrentContext.into()),
             Some(JsonTokens::String(_, _)) => self.parse_key_value_pair()?,
             Some(JsonTokens::Eof) => return Err(ParserError::EmptyJson.into()),
             None => return Err(ParserError::EmptyJson.into()),
@@ -247,6 +269,8 @@ impl<'a> Parser<'a> {
             Some(JsonTokens::Colon) => return Err(ParserError::InvalidSymbolInCurrentContext.into()),
             Some(JsonTokens::Comma) => return Err(ParserError::InvalidSymbolInCurrentContext.into()),
             Some(JsonTokens::Identifier(_, _)) => return Err(ParserError::InvalidValueInCurrentContext.into()),
+            Some(JsonTokens::Boolean(_)) => return Err(ParserError::InvalidValueInCurrentContext.into()),
+            Some(JsonTokens::Null) => return Err(ParserError::InvalidValueInCurrentContext.into()),
             Some(JsonTokens::String(_, _)) => return Err(ParserError::InvalidValueInCurrentContext.into()),
             Some(JsonTokens::Eof) => return Err(ParserError::InvalidValueInCurrentContext.into()),
             None => todo!(),
@@ -289,7 +313,7 @@ mod test {
     fn test_json_empty_is_invalid() {
         //A empty file is invalid json by the definition of the standard
         //we need __at least__ a empty json object
-        let test_src = "";
+        let test_src = include_str!("../examples/empty.json");
 
         let tokens = scan_json(&test_src).unwrap();
         let parser = Parser::new(&tokens).parse();
@@ -300,7 +324,7 @@ mod test {
     #[test]
     fn test_json_empty_object_is_valid() {
         //A file with a empty json object is valid json
-        let test_src = "{}";
+        let test_src = include_str!("../examples/empty_root.json");
 
         let tokens = scan_json(&test_src).unwrap();
         let parser = Parser::new(&tokens).parse();
@@ -311,7 +335,7 @@ mod test {
     #[test]
     fn test_json_key_without_a_value_is_invalid() {
         //A json rootobject with a key that has no valid value is invalid json
-        let test_src = "{\"some_key\":}";
+        let test_src = include_str!("../examples/key_no_value.json");
 
         let tokens = scan_json(&test_src).unwrap();
         let parser = Parser::new(&tokens).parse();
@@ -323,7 +347,7 @@ mod test {
     fn test_json_key_with_value_but_no_closing_brace_is_invalid() {
         //A json rootobject with a key and a string value but a missing closing
         //curly brace is invalid json
-        let test_src = "{ \"some_key\": \"some_value\" ";
+        let test_src = include_str!("../examples/kv_pair_unclosed.json");
 
         let tokens = scan_json(&test_src).unwrap();
         let parser = Parser::new(&tokens).parse();
@@ -334,7 +358,7 @@ mod test {
     #[test]
     fn test_json_key_with_string_value_is_valid() {
         //A json rootobject with a key and a string value is valid json
-        let test_src = "{ \"some_key\": \"some_value\" }";
+        let test_src = include_str!("../examples/kv_pair_string.json");
 
         let tokens = scan_json(&test_src).unwrap();
         let parser = Parser::new(&tokens).parse();
@@ -343,9 +367,72 @@ mod test {
     }
 
     #[test]
+    fn test_json_key_with_boolean_value_is_valid() {
+        //A json rootobject with a key and a boolean value of true is valid json
+        //the same is true for false values
+        let test_src = include_str!("../examples/kv_pair_boolean.json");
+
+        let tokens = scan_json(&test_src).unwrap();
+        let parser = Parser::new(&tokens).parse();
+
+        assert_eq!(parser.is_ok(), true);
+    }
+
+    #[test]
+    fn test_json_key_with_null_value_is_valid() {
+        //A json rootobject wit a key and a null value is valid json
+        let test_src = include_str!("../examples/kv_pair_null.json");
+
+        let tokens = scan_json(&test_src).unwrap();
+        let parser = Parser::new(&tokens).parse();
+
+        assert_eq!(parser.is_ok(), true);
+    }
+
+    #[test]
+    fn test_json_key_with_array_value_is_valid() {
+        let test_src = include_str!("../examples/kv_pair_array.json");
+
+        let tokens = scan_json(&test_src).unwrap();
+        let parser = Parser::new(&tokens).parse();
+
+        assert_eq!(parser.is_ok(), true);
+    }
+
+    #[test]
+    fn test_json_key_with_array_string_values_is_valid() {
+        let test_src = include_str!("../examples/kv_pair_array_string.json");
+
+        let tokens = scan_json(&test_src).unwrap();
+        let parser = Parser::new(&tokens).parse();
+
+        assert_eq!(parser.is_ok(), true);
+    }
+
+    #[test]
+    fn test_json_key_with_array_mixed_values_is_valid() {
+        let test_src = include_str!("../examples/kv_pair_array_mixed.json");
+
+        let tokens = scan_json(&test_src).unwrap();
+        let parser = Parser::new(&tokens).parse();
+
+        assert_eq!(parser.is_ok(), true);
+    }
+
+    #[test]
+    fn test_json_key_with_array_containing_malformed_commas_is_invalid() {
+        let test_src = include_str!("../examples/kv_pair_array_comma.json");
+
+        let tokens = scan_json(&test_src).unwrap();
+        let parser = Parser::new(&tokens).parse();
+
+        assert_eq!(parser.is_err(), true);
+    }
+
+    #[test]
     fn test_json_key_with_value_and_trailing_comma_is_invalid() {
         //A json rootobject with a kv pair is invalid with a trailing comma
-        let test_src = "{ \"some_key\": \"some_value\", }";
+        let test_src = include_str!("../examples/kv_pair_trailing_comma.json");
 
         let tokens = scan_json(&test_src).unwrap();
         let parser = Parser::new(&tokens).parse();
@@ -356,7 +443,7 @@ mod test {
     #[test]
     fn test_json_key_with_value_comma_key_with_value_is_valid() {
         //A kv pair after a comma results in a valid json
-        let test_src = "{ \"some_key\": \"some_value\", \"s2\": \"v2\" }";
+        let test_src = include_str!("../examples/kv_pair_comma_kv_pair.json");
 
         let tokens = scan_json(&test_src).unwrap();
         let parser = Parser::new(&tokens).parse();
